@@ -184,7 +184,31 @@
         const targetPeerId = urlParams.get('id');
 
         // 创建我的 Peer 节点
-        peer = new Peer(null, { debug: 2 });
+       // 修改后的 Peer 配置，增加穿透能力
+        peer = new Peer(null, {
+            debug: 2,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' },
+                    { urls: 'stun:stun4.l.google.com:19302' }
+                ]
+            }
+        });
+
+        // 新增：监听连接错误，给用户提示
+        peer.on('error', (err) => {
+            console.error(err);
+            if (err.type === 'peer-unavailable') {
+                alert("找不到房主！\n可能原因：\n1. 房主已经关闭了页面。\n2. 链接已过期。");
+            } else if (err.type === 'network' || err.type === 'disconnected') {
+                alert("网络连接失败。\n请尝试：\n1. 切换 WiFi/4G 网络\n2. 点击右上角“在浏览器打开”");
+            } else {
+                alert("连接出错: " + err.type);
+            }
+        });
 
         peer.on('open', (id) => {
             console.log('My ID: ' + id);
