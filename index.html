@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>薛定谔的四子棋 (联机版)</title>
+    <!-- 引入 PeerJS 库 -->
+    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f0f2f5;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container { max-width: 500px; width: 100%; display: flex; flex-direction: column; align-items: center; }
+
+        /* 状态栏 */
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            margin-bottom: 20px;
+            background: white;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .player {
+            padding: 10px 20px;
+            border-radius: 8px;
+            background: #eee;
+            opacity: 0.5;
+            transition: all 0.3s;
+            text-align: center;
+            width: 40%;
+        }
+
+        .player.active { opacity: 1; transform: scale(1.05); color: white; font-weight: bold; }
+        .p1.active { background-color: #0277bd; box-shadow: 0 4px 10px rgba(2,119,189,0.3); }
+        .p2.active { background-color: #f9a825; box-shadow: 0 4px 10px rgba(249,168,37,0.3); }
+
+        /* 棋盘 */
+        #game-board {
+            background-color: #0055AA;
+            padding: 10px;
+            border-radius: 10px;
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 8px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 380px;
+            aspect-ratio: 7/6;
+        }
+
+        .cell {
+            background-color: #f0f2f5;
+            border-radius: 50%;
+            cursor: pointer;
+            position: relative;
+            width: 100%;
+            padding-bottom: 100%; /* Make it square */
+        }
+
+        .piece {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            border-radius: 50%;
+            transform: scale(0.9);
+            box-shadow: inset -2px -2px 5px rgba(0,0,0,0.5);
+        }
+        .black { background: radial-gradient(circle at 30% 30%, #444, #000); }
+        .red { background: radial-gradient(circle at 30% 30%, #ff6666, #cc0000); }
+
+        /* 链接区域 */
+        #link-area {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff;
+            border-radius: 8px;
+            text-align: center;
+            width: 100%;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            display: none; /* 默认隐藏，连接后显示 */
+        }
+        
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #333;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:active { transform: scale(0.98); }
+
+        #message {
+            margin-top: 20px;
+            font-size: 1.2em;
+            font-weight: bold;
+            height: 30px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🎲 薛定谔的四子棋 (Web版)</h2>
+
+    <div class="status-bar">
+        <div id="p1-status" class="player p1 active">
+            <div>玩家 1</div>
+            <small id="p1-label">(等待中)</small>
+        </div>
+        <div id="p2-status" class="player p2">
+            <div>玩家 2</div>
+            <small id="p2-label">(等待中)</small>
+        </div>
+    </div>
+
+    <div id="game-board">
+        <!-- JS生成格子 -->
+    </div>
+
+    <div id="message">初始化中...</div>
+
+    <!-- 邀请链接显示区 -->
+    <div id="link-area">
+        <p>把这个链接发给好友：</p>
+        <input type="text" id="invite-link" readonly style="width:100%; padding:8px; margin-bottom:10px; border:1px solid #ddd; border-radius:4px;">
+        <button onclick="copyLink()">复制链接</button>
+    </div>
+    
+    <button id="restart-btn" onclick="requestRestart()" style="display:none; background:#d32f2f;">再来一局</button>
+</div>
+
+<script>
+    const rows = 6;
+    const cols = 7;
+    let board = [];
+    let currentPlayer = 1; // 1 or 2
+    let myPlayerId = 1;    // 我是 P1 还是 P2
+    let gameActive = false;
+    let conn = null;       // P2P 连接对象
+    let peer = null;
+
+    const messageEl = document.getElementById('message');
+    const boardEl = document.getElementById('game-board');
+    const p1Status = document.getElementById('p1-status');
+    const p2Status = document.getElementById('p2-status');
+    const linkArea = document.getElementById('link-area');
+    const inviteInput = document.getElementById('invite-link');
+
+    // 1. 初始化棋盘UI
+    function initBoardUI() {
+        boardEl.innerHTML = '';
+        board = Array(rows).fill().map(() => Array(cols).fill(0));
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const cell = document.createElement('div');
+                cell.classList.add('cell');
+                cell.onclick = () => handleLocalClick(c);
+                cell.dataset.r = r;
+                cell.dataset.c = c;
+                boardEl.appendChild(cell);
+            }
+        }
+    }
+
+    // 2. 启动 P2P 网络
+    function initNetwork() {
+        // 获取 URL 中的 id 参数
+        const urlParams = new URLSearchParams(window.location.search);
+        const targetPeerId = urlParams.get('id');
+
+        // 创建我的 Peer 节点
+        peer = new Peer(null, { debug: 2 });
+
+        peer.on('open', (id) => {
+            console.log('My ID: ' + id);
+            
+            if (targetPeerId) {
+                // === 访客模式 (我是 P2) ===
+                myPlayerId = 2;
+                p1Status.querySelector('small').innerText = "(对手)";
+                p2Status.querySelector('small').innerText = "(我)";
+                connectToPeer(targetPeerId);
+            } else {
+                // === 房主模式 (我是 P1) ===
+                myPlayerId = 1;
+                p1Status.querySelector('small').innerText = "(我)";
+                p2Status.querySelector('small').innerText = "(对手)";
+                generateInviteLink(id);
+                messageEl.innerText = "请复制链接邀请好友 ->";
+                linkArea.style.display = 'block';
+            }
+        });
+
+        // 监听连接请求 (房主端触发)
+        peer.on('connection', (c) => {
+            if (conn) { c.close(); return; } // 只允许一个人连
+            setupConnection(c);
+            messageEl.innerText = "好友已加入！游戏开始";
+            linkArea.style.display = 'none';
+            gameActive = true;
+            updateTurnUI();
+        });
+    }
+
+    // 连接到房主
+    function connectToPeer(hostId) {
+        messageEl.innerText = "正在连接房主...";
+        const c = peer.connect(hostId);
+        setupConnection(c);
+    }
+
+    // 设置连接的事件监听
+    function setupConnection(c) {
+        conn = c;
+        
+        conn.on('open', () => {
+            console.log("Connected!");
+            gameActive = true;
+            if(myPlayerId === 2) messageEl.innerText = "连接成功！游戏开始";
+            updateTurnUI();
+        });
+
+        conn.on('data', (data) => {
+            console.log("Received:", data);
+            if (data.type === 'move') {
+                applyRemoteMove(data);
+            } else if (data.type === 'restart') {
+                resetGameLocally();
+            }
+        });
+
+        conn.on('close', () => {
+            alert("对方已断开连接");
+            gameActive = false;
+        });
+    }
+
+    // 生成邀请链接
+    function generateInviteLink(id) {
+        const link = window.location.href.split('?')[0] + '?id=' + id;
+        inviteInput.value = link;
+    }
+
+    function copyLink() {
+        inviteInput.select();
+        document.execCommand("copy");
+        alert("链接已复制，去发给微信好友吧！");
+    }
+
+    // 3. 游戏逻辑
+    function handleLocalClick(col) {
+        // 检查：是否连接、是否结束、是否轮到我
+        if (!gameActive) return;
+        if (currentPlayer !== myPlayerId) {
+            messageEl.innerText = "⏳ 还没轮到你呢";
+            return;
+        }
+
+        // 计算落子位置
+        let r = -1;
+        for (let i = rows - 1; i >= 0; i--) {
+            if (board[i][col] === 0) {
+                r = i;
+                break;
+            }
+        }
+        if (r === -1) return; // 列满了
+
+        // ★ 生成随机颜色 (只有下棋的人生成，然后发给对方，保证一致)
+        const color = Math.random() < 0.5 ? 1 : 2;
+
+        // 执行落子
+        placePiece(r, col, color);
+
+        // 发送给对方
+        conn.send({
+            type: 'move',
+            row: r,
+            col: col,
+            color: color
+        });
+    }
+
+    function applyRemoteMove(data) {
+        // 收到对方的棋，直接落下
+        placePiece(data.row, data.col, data.color);
+    }
+
+    function placePiece(r, c, color) {
+        board[r][c] = color;
+        
+        // 动画渲染
+        const cell = boardEl.children[r * cols + c];
+        const piece = document.createElement('div');
+        piece.classList.add('piece', color === 1 ? 'black' : 'red');
+        cell.appendChild(piece);
+
+        // 检查胜利
+        if (checkWin(r, c, color)) {
+            endGame(color);
+        } else {
+            // 切换回合
+            currentPlayer = currentPlayer === 1 ? 2 : 1;
+            updateTurnUI();
+        }
+    }
+
+    function updateTurnUI() {
+        if (!gameActive) return;
+        
+        // 移除旧的状态
+        p1Status.classList.remove('active');
+        p2Status.classList.remove('active');
+
+        // 更新状态高亮
+        if (currentPlayer === 1) p1Status.classList.add('active');
+        else p2Status.classList.add('active');
+
+        // 文字提示
+        if (currentPlayer === myPlayerId) {
+            messageEl.innerText = "🔴⚫ 轮到你了！点击落子";
+            messageEl.style.color = "#d32f2f";
+        } else {
+            messageEl.innerText = "⏳ 对方思考中...";
+            messageEl.style.color = "#666";
+        }
+    }
+
+    function checkWin(r, c, color) {
+        const directions = [[[0,1],[0,-1]], [[1,0],[-1,0]], [[1,1],[-1,-1]], [[1,-1],[-1,1]]];
+        for (let axis of directions) {
+            let count = 1;
+            for (let dir of axis) {
+                let nr = r + dir[0], nc = c + dir[1];
+                while (nr >= 0 && nr < rows && nc >= 0 && nc < cols && board[nr][nc] === color) {
+                    count++; nr += dir[0]; nc += dir[1];
+                }
+            }
+            if (count >= 4) return true;
+        }
+        return false;
+    }
+
+    function endGame(winningColor) {
+        gameActive = false;
+        // 谁下了这步棋（也就是当前的 currentPlayer）谁就赢
+        // 注意：placePiece 里还没切换 currentPlayer
+        const winnerId = currentPlayer;
+        
+        let winText = winnerId === 1 ? "玩家1" : "玩家2";
+        let isMe = winnerId === myPlayerId;
+        
+        messageEl.innerHTML = `🎉 <strong>${winText}</strong> 获胜！${isMe ? "(你赢了!)" : "(你输了)"}`;
+        document.getElementById('restart-btn').style.display = 'block';
+    }
+
+    // 重开逻辑
+    function requestRestart() {
+        if(conn) conn.send({ type: 'restart' });
+        resetGameLocally();
+    }
+
+    function resetGameLocally() {
+        initBoardUI();
+        currentPlayer = 1;
+        gameActive = true;
+        document.getElementById('restart-btn').style.display = 'none';
+        updateTurnUI();
+    }
+
+    // 启动
+    initBoardUI();
+    initNetwork();
+
+</script>
+</body>
+</html>
